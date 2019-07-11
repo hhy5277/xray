@@ -4,15 +4,17 @@ const path = require('path');
 const url = require('url');
 const XrayClient = require('../shared/xray_client');
 
-const SERVER_PATH = path.join(__dirname, '..', '..', '..', 'target', 'debug', 'xray_server');
+const SERVER_PATH = process.env.XRAY_SERVER_PATH;
+if (!SERVER_PATH) {
+  console.error('Missing XRAY_SERVER_PATH environment variable');
+  process.exit(1);
+}
 
 const SOCKET_PATH = process.env.XRAY_SOCKET_PATH;
 if (!SOCKET_PATH) {
   console.error('Missing XRAY_SOCKET_PATH environment variable');
   process.exit(1);
 }
-
-const INITIAL_MESSAGE = process.env.XRAY_INITIAL_MESSAGE;
 
 class XrayApplication {
   constructor (serverPath, socketPath) {
@@ -23,7 +25,7 @@ class XrayApplication {
     this.xrayClient = new XrayClient();
   }
 
-  async start (initialMessage) {
+  async start () {
     const serverProcess = spawn(this.serverPath, [], {stdio: ['ignore', 'pipe', 'inherit']});
     app.on('before-quit', () => serverProcess.kill());
 
@@ -41,9 +43,6 @@ class XrayApplication {
     await this.xrayClient.start(this.socketPath);
     this.xrayClient.addMessageListener(this._handleMessage.bind(this));
     this.xrayClient.sendMessage({type: 'StartApp'});
-    if (initialMessage) {
-      this.xrayClient.sendMessage(JSON.parse(initialMessage));
-    }
   }
 
   async _handleMessage (message) {
@@ -65,7 +64,10 @@ class XrayApplication {
       slashes: true
     }));
     this.windowsById.set(windowId, window);
-    window.on('closed', () => this.windowsById.delete(windowId));
+    window.on('closed', () => {
+      this.windowsById.delete(windowId);
+      this.xrayClient.sendMessage({type: 'CloseWindow', window_id: windowId});
+    });
   }
 }
 
@@ -78,4 +80,6 @@ app.on('window-all-closed', function () {
 });
 
 const application = new XrayApplication(SERVER_PATH, SOCKET_PATH);
-application.start(INITIAL_MESSAGE);
+application.start().then(() => {
+  console.log('Listening');
+});

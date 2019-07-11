@@ -39,7 +39,6 @@ pub enum Node<T: Item> {
     },
 }
 
-#[cfg(test)]
 pub struct Iter<'a, T: 'a + Item> {
     tree: &'a Tree<T>,
     did_start: bool,
@@ -50,7 +49,7 @@ pub struct Iter<'a, T: 'a + Item> {
 pub struct Cursor<'a, T: 'a + Item> {
     tree: &'a Tree<T>,
     did_seek: bool,
-    stack: Vec<(&'a Tree<T>, usize)>,
+    stack: Vec<(&'a Tree<T>, usize, T::Summary)>,
     prev_leaf: Option<&'a Tree<T>>,
     summary: T::Summary,
 }
@@ -72,6 +71,12 @@ impl<T: Item> Extend<T> for Tree<T> {
 impl<'a, T: Item> Tree<T> {
     pub fn new() -> Self {
         Self::from_children(vec![])
+    }
+
+    pub fn from_item(item: T) -> Self {
+        let mut tree = Self::new();
+        tree.push(item);
+        tree
     }
 
     fn from_children(children: Vec<Self>) -> Self {
@@ -97,7 +102,6 @@ impl<'a, T: Item> Tree<T> {
         summary
     }
 
-    #[cfg(test)]
     pub fn iter(&self) -> Iter<T> {
         Iter::new(self)
     }
@@ -108,6 +112,10 @@ impl<'a, T: Item> Tree<T> {
 
     pub fn len<D: Dimension<Summary = T::Summary>>(&self) -> D {
         D::from_summary(self.summary())
+    }
+
+    pub fn last(&self) -> Option<&T> {
+        self.rightmost_leaf().map(|leaf| leaf.value())
     }
 
     pub fn push(&mut self, item: T) {
@@ -268,7 +276,7 @@ impl<'a, T: Item> Tree<T> {
         }
     }
 
-    fn summary(&self) -> &T::Summary {
+    pub fn summary(&self) -> &T::Summary {
         match self.0.as_ref() {
             &Node::Internal { ref summary, .. } => summary,
             &Node::Leaf { ref summary, .. } => summary,
@@ -331,7 +339,6 @@ impl<'a, T: Item> Tree<T> {
     }
 }
 
-#[cfg(test)]
 impl<'a, T: 'a + Item> Iter<'a, T> {
     fn new(tree: &'a Tree<T>) -> Self {
         Iter {
@@ -358,7 +365,6 @@ impl<'a, T: 'a + Item> Iter<'a, T> {
     }
 }
 
-#[cfg(test)]
 impl<'a, T: 'a + Item> Iterator for Iter<'a, T>
 where
     Self: 'a,
@@ -421,7 +427,7 @@ impl<'tree, T: 'tree + Item> Cursor<'tree, T> {
         assert!(self.did_seek, "Must seek before reading cursor position");
         self.stack
             .last()
-            .map(|&(subtree, index)| &subtree.children()[index])
+            .map(|&(subtree, index, _)| &subtree.children()[index])
     }
 
     pub fn next(&mut self) {
@@ -429,7 +435,7 @@ impl<'tree, T: 'tree + Item> Cursor<'tree, T> {
 
         while self.stack.len() > 0 {
             let (prev_subtree, index) = {
-                let &mut (prev_subtree, ref mut index) = self.stack.last_mut().unwrap();
+                let &mut (prev_subtree, ref mut index, _) = self.stack.last_mut().unwrap();
                 if prev_subtree.height() == 1 {
                     let prev_leaf = &prev_subtree.children()[*index];
                     self.prev_leaf = Some(prev_leaf);
@@ -447,13 +453,62 @@ impl<'tree, T: 'tree + Item> Cursor<'tree, T> {
         }
     }
 
+    pub fn prev(&mut self) {
+        assert!(self.did_seek, "Must seek before calling prev");
+
+        if self.stack.is_empty() && self.prev_leaf.is_some() {
+            self.summary = T::Summary::default();
+            self.seek_to_last_item(self.tree);
+        } else {
+            while self.stack.len() > 0 {
+                let subtree = {
+                    let (parent, index, summary) = self.stack.last_mut().unwrap();
+                    if *index == 0 {
+                        None
+                    } else {
+                        *index -= 1;
+                        self.summary = summary.clone();
+                        for child in &parent.children()[0..*index] {
+                            self.summary += child.summary();
+                        }
+                        parent.children().get(*index)
+                    }
+                };
+                if let Some(subtree) = subtree {
+                    self.seek_to_last_item(subtree);
+                    break;
+                } else {
+                    self.stack.pop();
+                }
+            }
+        }
+
+        self.prev_leaf = if self.stack.is_empty() {
+            None
+        } else {
+            let mut stack_index = self.stack.len() - 1;
+            loop {
+                let (ancestor, index, _) = &self.stack[stack_index];
+                if *index == 0 {
+                    if stack_index == 0 {
+                        break None;
+                    } else {
+                        stack_index -= 1;
+                    }
+                } else {
+                    break ancestor.children()[index - 1].rightmost_leaf();
+                }
+            }
+        };
+    }
+
     fn seek_to_first_item<'a>(&'a mut self, mut tree: &'tree Tree<T>) {
         self.did_seek = true;
 
         loop {
             match tree.0.as_ref() {
                 &Node::Internal { ref children, .. } => {
-                    self.stack.push((tree, 0));
+                    self.stack.push((tree, 0, self.summary.clone()));
                     tree = &children[0];
                 }
                 &Node::Leaf { .. } => {
@@ -463,31 +518,87 @@ impl<'tree, T: 'tree + Item> Cursor<'tree, T> {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn seek<D: Dimension<Summary = T::Summary>>(&mut self, pos: &D, bias: SeekBias) {
-        self.seek_and_build_prefix(pos, bias, None);
+    fn seek_to_last_item<'a>(&'a mut self, mut tree: &'tree Tree<T>) {
+        self.did_seek = true;
+
+        loop {
+            match tree.0.as_ref() {
+                &Node::Internal { ref children, .. } => {
+                    self.stack
+                        .push((tree, children.len() - 1, self.summary.clone()));
+                    for child in &tree.children()[0..children.len() - 1] {
+                        self.summary += child.summary();
+                    }
+                    tree = children.last().unwrap();
+                }
+                &Node::Leaf { .. } => {
+                    break;
+                }
+            }
+        }
     }
 
-    pub fn build_prefix<D: Dimension<Summary = T::Summary>>(
+    pub fn seek<D: Dimension<Summary = T::Summary>>(&mut self, pos: &D, bias: SeekBias) {
+        self.reset();
+        self.seek_and_slice(pos, bias, None);
+    }
+
+    pub fn slice<D: Dimension<Summary = T::Summary>>(
         &mut self,
         end: &D,
         bias: SeekBias,
     ) -> Tree<T> {
         let mut prefix = Tree::new();
-        self.seek_and_build_prefix(end, bias, Some(&mut prefix));
+        self.seek_and_slice(end, bias, Some(&mut prefix));
         prefix
     }
 
-    fn seek_and_build_prefix<D: Dimension<Summary = T::Summary>>(
+    fn seek_and_slice<D: Dimension<Summary = T::Summary>>(
         &mut self,
         pos: &D,
         bias: SeekBias,
-        mut prefix: Option<&mut Tree<T>>,
+        mut slice: Option<&mut Tree<T>>,
     ) {
-        self.reset();
-        self.did_seek = true;
+        let mut cur_subtree = None;
+        if self.did_seek {
+            debug_assert!(*pos >= D::from_summary(&self.summary));
+            while self.stack.len() > 0 {
+                {
+                    let &mut (prev_subtree, ref mut index, _) = self.stack.last_mut().unwrap();
+                    if prev_subtree.height() > 1 {
+                        *index += 1;
+                    }
 
-        let mut cur_subtree = Some(self.tree);
+                    let children_len = prev_subtree.children().len();
+                    while *index < children_len {
+                        let subtree = &prev_subtree.children()[*index];
+                        let summary = subtree.summary();
+                        let subtree_end =
+                            D::from_summary(&self.summary) + &D::from_summary(summary);
+                        if *pos > subtree_end || (*pos == subtree_end && bias == SeekBias::Right) {
+                            self.summary += summary;
+                            self.prev_leaf = subtree.rightmost_leaf();
+                            slice.as_mut().map(|slice| slice.push_tree(subtree.clone()));
+                            *index += 1;
+                        } else {
+                            cur_subtree = Some(subtree);
+                            break;
+                        }
+                    }
+                }
+
+                if cur_subtree.is_some() {
+                    break;
+                } else {
+                    self.stack.pop();
+                }
+            }
+        } else {
+            self.reset();
+            self.did_seek = true;
+            cur_subtree = Some(self.tree);
+        }
+
         while let Some(subtree) = cur_subtree.take() {
             match subtree.0.as_ref() {
                 &Node::Internal {
@@ -500,9 +611,7 @@ impl<'tree, T: 'tree + Item> Cursor<'tree, T> {
                     if *pos > subtree_end || (*pos == subtree_end && bias == SeekBias::Right) {
                         self.summary += summary;
                         self.prev_leaf = rightmost_leaf.as_ref();
-                        prefix
-                            .as_mut()
-                            .map(|prefix| prefix.push_tree(subtree.clone()));
+                        slice.as_mut().map(|slice| slice.push_tree(subtree.clone()));
                     } else {
                         for (index, child) in children.iter().enumerate() {
                             let child_end =
@@ -510,11 +619,9 @@ impl<'tree, T: 'tree + Item> Cursor<'tree, T> {
                             if *pos > child_end || (*pos == child_end && bias == SeekBias::Right) {
                                 self.summary += child.summary();
                                 self.prev_leaf = child.rightmost_leaf();
-                                prefix
-                                    .as_mut()
-                                    .map(|prefix| prefix.push_tree(child.clone()));
+                                slice.as_mut().map(|slice| slice.push_tree(child.clone()));
                             } else {
-                                self.stack.push((subtree, index));
+                                self.stack.push((subtree, index, self.summary.clone()));
                                 cur_subtree = Some(child);
                                 break;
                             }
@@ -527,37 +634,10 @@ impl<'tree, T: 'tree + Item> Cursor<'tree, T> {
                     if *pos > subtree_end || (*pos == subtree_end && bias == SeekBias::Right) {
                         self.prev_leaf = Some(subtree);
                         self.summary += summary;
-                        prefix
-                            .as_mut()
-                            .map(|prefix| prefix.push_tree(subtree.clone()));
+                        slice.as_mut().map(|slice| slice.push_tree(subtree.clone()));
                     }
                 }
             }
-        }
-    }
-
-    pub fn build_suffix(&mut self) -> Tree<T> {
-        assert!(self.did_seek, "Must seek before calling build_suffix");
-
-        self.prev_leaf = self.tree.rightmost_leaf();
-        self.summary = self.tree.summary().clone();
-
-        if self.did_seek {
-            let mut suffix = Tree::new();
-            while let Some((subtree, index)) = self.stack.pop() {
-                let start = if subtree.height() == 1 {
-                    index
-                } else {
-                    index + 1
-                };
-                for i in start..subtree.children().len() {
-                    suffix.push_tree(subtree.children()[i].clone());
-                }
-            }
-            suffix
-        } else {
-            self.did_seek = true;
-            self.tree.clone()
         }
     }
 }
@@ -685,9 +765,7 @@ mod tests {
                 let suffix_start = rng.gen_range(0, tree.len::<Count>().0 + 1);
                 let prefix_end = rng.gen_range(0, suffix_start + 1);
 
-                let prefix_items = cursor
-                    .build_prefix(&Count(prefix_end), SeekBias::Right)
-                    .items();
+                let prefix_items = cursor.slice(&Count(prefix_end), SeekBias::Right).items();
                 assert_eq!(prefix_items, reference_items[0..prefix_end].to_vec());
 
                 // Scan to the start of the suffix if we aren't already there
@@ -707,7 +785,7 @@ mod tests {
                     }
                 }
 
-                let suffix_items = cursor.build_suffix().items();
+                let suffix_items = cursor.slice(&tree.len::<Count>(), SeekBias::Right).items();
                 assert_eq!(suffix_items, reference_items[suffix_start..].to_vec());
             }
         }
@@ -718,7 +796,7 @@ mod tests {
         // Empty tree
         let tree = Tree::<u16>::new();
         let mut cursor = tree.cursor();
-        assert_eq!(cursor.build_prefix(&Sum(0), SeekBias::Right), Tree::new());
+        assert_eq!(cursor.slice(&Sum(0), SeekBias::Right), Tree::new());
         assert_eq!(cursor.item(), None);
         assert_eq!(cursor.prev_item(), None);
         assert_eq!(cursor.start::<Count>(), Count(0));
@@ -728,7 +806,7 @@ mod tests {
         let mut tree = Tree::<u16>::new();
         tree.extend(vec![1]);
         let mut cursor = tree.cursor();
-        assert_eq!(cursor.build_prefix(&Sum(0), SeekBias::Right), Tree::new());
+        assert_eq!(cursor.slice(&Sum(0), SeekBias::Right), Tree::new());
         assert_eq!(cursor.item(), Some(&1));
         assert_eq!(cursor.prev_item(), None);
         assert_eq!(cursor.start::<Count>(), Count(0));
@@ -740,14 +818,24 @@ mod tests {
         assert_eq!(cursor.start::<Count>(), Count(1));
         assert_eq!(cursor.start::<Sum>(), Sum(1));
 
-        assert_eq!(cursor.build_prefix(&Sum(1), SeekBias::Right).items(), [1]);
+        cursor.prev();
+        assert_eq!(cursor.item(), Some(&1));
+        assert_eq!(cursor.prev_item(), None);
+        assert_eq!(cursor.start::<Count>(), Count(0));
+        assert_eq!(cursor.start::<Sum>(), Sum(0));
+
+        cursor.reset();
+        assert_eq!(cursor.slice(&Sum(1), SeekBias::Right).items(), [1]);
         assert_eq!(cursor.item(), None);
         assert_eq!(cursor.prev_item(), Some(&1));
         assert_eq!(cursor.start::<Count>(), Count(1));
         assert_eq!(cursor.start::<Sum>(), Sum(1));
 
         cursor.seek(&Sum(0), SeekBias::Right);
-        assert_eq!(cursor.build_suffix().items(), [1]);
+        assert_eq!(
+            cursor.slice(&tree.len::<Count>(), SeekBias::Right).items(),
+            [1]
+        );
         assert_eq!(cursor.item(), None);
         assert_eq!(cursor.prev_item(), Some(&1));
         assert_eq!(cursor.start::<Count>(), Count(1));
@@ -758,10 +846,7 @@ mod tests {
         tree.extend(vec![1, 2, 3, 4, 5, 6]);
         let mut cursor = tree.cursor();
 
-        assert_eq!(
-            cursor.build_prefix(&Sum(4), SeekBias::Right).items(),
-            [1, 2]
-        );
+        assert_eq!(cursor.slice(&Sum(4), SeekBias::Right).items(), [1, 2]);
         assert_eq!(cursor.item(), Some(&3));
         assert_eq!(cursor.prev_item(), Some(&2));
         assert_eq!(cursor.start::<Count>(), Count(2));
@@ -792,10 +877,51 @@ mod tests {
         assert_eq!(cursor.start::<Count>(), Count(6));
         assert_eq!(cursor.start::<Sum>(), Sum(21));
 
+        cursor.prev();
+        assert_eq!(cursor.item(), Some(&6));
+        assert_eq!(cursor.prev_item(), Some(&5));
+        assert_eq!(cursor.start::<Count>(), Count(5));
+        assert_eq!(cursor.start::<Sum>(), Sum(15));
+
+        cursor.prev();
+        assert_eq!(cursor.item(), Some(&5));
+        assert_eq!(cursor.prev_item(), Some(&4));
+        assert_eq!(cursor.start::<Count>(), Count(4));
+        assert_eq!(cursor.start::<Sum>(), Sum(10));
+
+        cursor.prev();
+        assert_eq!(cursor.item(), Some(&4));
+        assert_eq!(cursor.prev_item(), Some(&3));
+        assert_eq!(cursor.start::<Count>(), Count(3));
+        assert_eq!(cursor.start::<Sum>(), Sum(6));
+
+        cursor.prev();
+        assert_eq!(cursor.item(), Some(&3));
+        assert_eq!(cursor.prev_item(), Some(&2));
+        assert_eq!(cursor.start::<Count>(), Count(2));
+        assert_eq!(cursor.start::<Sum>(), Sum(3));
+
+        cursor.prev();
+        assert_eq!(cursor.item(), Some(&2));
+        assert_eq!(cursor.prev_item(), Some(&1));
+        assert_eq!(cursor.start::<Count>(), Count(1));
+        assert_eq!(cursor.start::<Sum>(), Sum(1));
+
+        cursor.prev();
+        assert_eq!(cursor.item(), Some(&1));
+        assert_eq!(cursor.prev_item(), None);
+        assert_eq!(cursor.start::<Count>(), Count(0));
+        assert_eq!(cursor.start::<Sum>(), Sum(0));
+
+        cursor.prev();
+        assert_eq!(cursor.item(), None);
+        assert_eq!(cursor.prev_item(), None);
+        assert_eq!(cursor.start::<Count>(), Count(0));
+        assert_eq!(cursor.start::<Sum>(), Sum(0));
+
+        cursor.reset();
         assert_eq!(
-            cursor
-                .build_prefix(&tree.len::<Sum>(), SeekBias::Right)
-                .items(),
+            cursor.slice(&tree.len::<Count>(), SeekBias::Right).items(),
             tree.items()
         );
         assert_eq!(cursor.item(), None);
@@ -803,9 +929,11 @@ mod tests {
         assert_eq!(cursor.start::<Count>(), Count(6));
         assert_eq!(cursor.start::<Sum>(), Sum(21));
 
-        // Suffixes are built from the cursor's current location to the end.
         cursor.seek(&Count(3), SeekBias::Right);
-        assert_eq!(cursor.build_suffix().items(), [4, 5, 6]);
+        assert_eq!(
+            cursor.slice(&tree.len::<Count>(), SeekBias::Right).items(),
+            [4, 5, 6]
+        );
         assert_eq!(cursor.item(), None);
         assert_eq!(cursor.prev_item(), Some(&6));
         assert_eq!(cursor.start::<Count>(), Count(6));
@@ -816,5 +944,11 @@ mod tests {
         assert_eq!(cursor.item(), Some(&1));
         cursor.seek(&Sum(1), SeekBias::Right);
         assert_eq!(cursor.item(), Some(&2));
+
+        // Slicing without resetting starts from where the cursor is parked at.
+        cursor.seek(&Sum(1), SeekBias::Right);
+        assert_eq!(cursor.slice(&Sum(6), SeekBias::Right).items(), vec![2, 3]);
+        assert_eq!(cursor.slice(&Sum(21), SeekBias::Left).items(), vec![4, 5]);
+        assert_eq!(cursor.slice(&Sum(21), SeekBias::Right).items(), vec![6]);
     }
 }

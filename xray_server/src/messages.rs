@@ -1,19 +1,30 @@
-use std::path::PathBuf;
 use serde_json;
-use app::WindowId;
-use xray_core::window::{self, ViewId};
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use xray_core::{ViewId, WindowId, WindowUpdate};
 
 #[derive(Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum IncomingMessage {
     StartApp,
-    StartCli,
+    StartCli {
+        headless: bool,
+    },
+    TcpListen {
+        port: u16,
+    },
     StartWindow {
         window_id: WindowId,
         height: f64,
     },
+    CloseWindow {
+        window_id: WindowId,
+    },
     OpenWorkspace {
         paths: Vec<PathBuf>,
+    },
+    ConnectToPeer {
+        address: SocketAddr,
     },
     Action {
         view_id: ViewId,
@@ -25,5 +36,7 @@ pub enum IncomingMessage {
 #[serde(tag = "type")]
 pub enum OutgoingMessage {
     OpenWindow { window_id: WindowId },
-    UpdateWindow(window::WindowUpdate),
+    UpdateWindow(WindowUpdate),
+    Error { description: String },
+    Ok,
 }

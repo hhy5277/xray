@@ -1,16 +1,34 @@
 # Xray
 
+[![Build Status](https://travis-ci.org/atom/xray.svg?branch=master)](https://travis-ci.org/atom/xray)
+
 Xray is an experimental Electron-based text editor informed by what we've learned in the four years since the launch of Atom. In the short term, this project is a testbed for rapidly iterating on several radical ideas without risking the stability of Atom. The longer term future of the code in this repository will become clearer after a few months of progress. For now, our primary goal is to iterate rapidly and learn as much as possible.
+
+## Q3 2018 Focus
+
+We're currently focused on a sub-project of Xray called [Memo](./memo_core), which will serve as the foundation of Xray but also be available as a standalone tool. Memo is an operation-based version control system that tracks changes at the level of individual keystrokes and synchronizes branches in real time.
 
 ## Updates
 
-* [March 19, 2018](./docs/updates/2018_03_19.md)
-* [March 12, 2018](./docs/updates/2018_03_12.md)
-* [March 5, 2018](./docs/updates/2018_03_05.md)
+* [October 2, 2018](./docs/updates/2018_10_02.md)
+* [September 14, 2018](./docs/updates/2018_09_14.md)
+* [August 28, 2018](./docs/updates/2018_08_28.md)
+* [August 21, 2018](./docs/updates/2018_08_21.md)
+* [July 31, 2018](./docs/updates/2018_07_31.md)
+* [July 23, 2018](./docs/updates/2018_07_23.md)
+* [July 16, 2018](./docs/updates/2018_07_16.md)
+* [July 10, 2018](./docs/updates/2018_07_10.md)
+* [Archives](./docs/updates/)
 
 ## Foundational priorities
 
 Our goal is to build a cross-platform text editor that is designed from the beginning around the following foundational priorities:
+
+### Collaboration
+
+*Xray makes it as easy to code together as it is to code alone.*
+
+We design features for collaborative use from the beginning. Editors and other relevant UI elements are designed to be occupied by multiple users. Interactions with the file system and other resources such as subprocesses are abstracted to work over network connections.
 
 ### High performance
 
@@ -26,12 +44,6 @@ We design our features to be responsive from the beginning. We reliably provide 
 
 We are careful to maximize throughput of batch operations such as project-wide search. Memory consumption is kept within a low constant factor of the size of the project and open buffer set, but we trade memory for speed and extensibility so long as memory requirements are reasonable.
 
-### Collaboration
-
-*Xray makes it as easy to code together as it is to code alone.*
-
-We design features for collaborative use from the beginning. Editors and other relevant UI elements are designed to be occupied by multiple users. Interactions with the file system and other resources such as subprocesses are abstracted to work over network connections.
-
 ### Extensibility
 
 *Xray gives developers control over their own tools.*
@@ -42,7 +54,7 @@ We expose convenient and powerful APIs to enable users to add non-trivial functi
 
 *Editing on GitHub feels like editing in Xray.*
 
-We provide a feature-rich editor component that can be used on the web and within other Electron applications. This will ultimately help us provide a more unified experience between GitHub.com and this editor and give us a stronger base of stakeholders in the core editing technology. If this forces serious performance compromises we may potentially drop this objective, but we don't think that it will.
+We want to provide a full-featured editor experience that can be used from within a browser. This will ultimately help us provide a more unified experience between GitHub.com and Xray and give us a stronger base of stakeholders in the core editing technology.
 
 ## Architecture
 
@@ -58,7 +70,7 @@ The fundamental question is whether we can gain the web's benefits for extensibi
 
 ### Core application logic is written in Rust
 
-While the UI will be web-based, the core of the application is implemented in a server process written in Rust. We place as much logic as possible in a library crate located in `/xray_core`, then expose this logic as a server when running Xray on on the desktop (`/xray_server`) and a web-assembly library running on a worker thread when running Xray in the browser (`/xray_wasm`). We communicate between the UI and the back end process via JSON RPC.
+While the UI will be web-based, the core of the application is implemented in a server process written in Rust. We place as much logic as possible in a library crate located in `/xray_core`, then expose this logic as a server when running Xray on the desktop (`/xray_server`) and a web-assembly library running on a worker thread when running Xray in the browser (`/xray_wasm`). We communicate between the UI and the back end process via JSON RPC.
 
 All of the core application code other than the view logic should be written in Rust. This will ensure that it has a minimal footprint to load and execute, and Rust's robust type system will help us maintain it more efficiently than dynamically typed code. A language that is fundamentally designed for multi-threading will also make it easier to exploit parallelism whenever the need arises, whereas JavaScript's single-threaded nature makes parallelism awkward and challenging.
 
@@ -117,13 +129,15 @@ By using React, we completely eliminate the view framework as a concern that we 
 
 ### Styling will be specified in JS
 
-CSS is a widely-known and well-supported tool for styling user interfaces, which is why we embraced it in Atom. Unfortunately, the performance and maintainability of CSS degrade as the number of selectors increases. CSS also lacks good tools for exposing a versioned theming APIs and applying programmatic logic such as altering colors. Finally, the browser does not expose APIs for being notified when computed styles change, making it difficult to use CSS as a source of truth for complex components. For a theming system that performs well and scales, we need more direct control. We plan to use a CSS-in-JS approach that automatically generates atomic selectors so as to keep our total number of selectors minimal.
+CSS is a widely-known and well-supported tool for styling user interfaces, which is why we embraced it in Atom. Unfortunately, the performance and maintainability of CSS degrade as the number of selectors increases. CSS also lacks good tools for exposing a versioned theming API and applying programmatic logic such as altering colors. Finally, the browser does not expose APIs for being notified when computed styles change, making it difficult to use CSS as a source of truth for complex components. For a theming system that performs well and scales, we need more direct control. We plan to use a CSS-in-JS approach that automatically generates atomic selectors so as to keep our total number of selectors minimal.
 
 ### Text is rendered via WebGL
 
 In Atom, the vast majority of computation of any given frame is spent manipulating the DOM, recalculating styles, and performing layout. To achieve good text rendering performance, it is critical that we bypass this overhead and take direct control over rendering. Like Alacritty and Xi, we plan to employ OpenGL to position quads that are mapped to glyph bitmaps in a texture atlas.
 
-We plan to use HarfBuzz to determine an accurate mapping between character sequences and glyphs, since one character does not always correspond to one glyph. Once we identify clusters of characters corresponding to glyphs, we'll rasterize glyphs via an HTML 5 canvas to ensure we use the appropriate text rasterization method for the current platform, then upload them to the texture atlas on the GPU to be referenced in shaders.
+There isn't always a 1:1 relationship between code units inside a JavaScript string and glyphs on screen. Characters (code points) can be expressed as two 16-bit units, but this situation is simple to detect by examining the numeric ranges of the code units. In other cases, the correspondence between code units and glyphs is less straightforward to determine. If the current font and/or locale depends on ligatures or contextual alternates to render correctly, determining the correspondence between code points and glyphs requires support for complex text shaping that references metadata embedded in the font. Bi-directional text complicates the situation further.
+
+For now, our plan is to detect the presence of characters that may require such complex text shaping and fall back to rendering with HTML on the specific lines that require these features. This will enable us to support scripts such as Arabic and Devanagari. For fonts like FiraCode, which include ligatures for common character sequences used in programming, we'll need a different approach. One idea would be to perform a limited subset of text-shaping that just handles ligatures, so as to keep performance high. Another approach that would only work on the desktop would be to use the platform text-shaping and rasterization APIs in this environment.
 
 Bypassing the DOM means that we'll need to implement styling and text layout ourselves. That is a high price to pay, but we think it will be worth it to bypass the performance overhead imposed by the DOM.
 
@@ -135,52 +149,12 @@ At this phase, this code is focused on learning. Whatever code we write should b
 
 ### Documentation-driven development
 
-Before coding, we ask ourselves whether the code we're writing can be motivated by something that's written in the guide. The right approach here will always be a judgment call, but lets err on the side of transparency and see what happens.
+Before coding, we ask ourselves whether the code we're writing can be motivated by something that's written in the guide. The right approach here will always be a judgment call, but let's err on the side of transparency and see what happens.
 
 ### Disciplined monorepo
 
 All code related to Xray should live in this repository, but intra-repository dependencies should be expressed in a disciplined way to ensure that a one-line docs change doesn't require us to rebuild the world. Builds should be finger-printed on a per-component basis and we should aim to keep components granular.
 
-### Community SLA
-
-Well-formulated PRs and issues will receive some form of response by the end of the next business day. If this interferes with our ability to learn, we revisit.
-
 ## Contributing
 
 Interested in helping out? Welcome! Check out the [CONTRIBUTING](./CONTRIBUTING.md) guide to get started.
-
-## Q1 2018 Roadmap
-
-By May 1, we'd like it to be possible for multiple Xray clients to connect to a headless remote workspace. Clients should be able to open files from the remote project via the file finder and collaboratively edit shared buffers. We also would like to enable collaborators to follow each other around and have a text-based conversation in the workspace. We're going to focus on the bare minimum of editor features needed to reach this goal. If we're collaboratively editing text that isn't syntax highlighted, that's ok for now.
-
-* [x] High-performance text rendering
-* [x] Cursors, selections, and editing
-* [x] Client/server architecture
-* [ ] File finder
-* [ ] Load and save buffers
-* [ ] Key bindings system
-* [ ] Flesh out basic editor experience
-  * [ ] Gutter with line numbers
-  * [ ] Autoscroll
-  * [ ] Low-hanging movement and editing operations
-* [ ] Remote headless workspace
-  * [ ] File finder
-  * [ ] Loading a buffer
-  * [ ] Editing can be shared between multiple participants
-  * [ ] Saving
-  * [ ] Discussions
-  * [ ] Following
-
-## Q2 2018
-
-Once we get the basic collaboration experience down, we'll be looking to expand on it by adding the basic features that developers expect from a text editor. This list is incomplete and will likely evolve as this time approaches.
-
-* [ ] Find and replace in a buffer
-* [ ] Local project-wide search
-* [ ] Remote project-wide search
-* [ ] Undo history
-* [ ] Syntax highlighting
-* [ ] Project browser
-* [ ] Peer-to-peer workspace sharing
-* [ ] Code folding
-* [ ] Soft wrapping
